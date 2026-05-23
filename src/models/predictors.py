@@ -100,14 +100,15 @@ class PneumoniaPredictor:
         models_path = Path(models_dir)
         meta_path = models_path / "pneumonia_meta.json"
 
-        self.model_path = self._find_model_path(models_path)
-        self.model = self._load_model_safely(self.model_path)
-        logger.info("Loaded pneumonia model from %s", self.model_path)
-
         with open(meta_path) as f:
             self.meta = json.load(f)
         self.img_size: tuple[int, int] = tuple(self.meta.get("img_size", [224, 224]))
         self.class_names: list[str]    = self.meta["class_names"]
+
+        self.models_path = models_path
+        self.model_path = self._find_model_path(models_path)
+        self.model = self._load_model_safely(self.model_path)
+        logger.info("Loaded pneumonia model from %s", self.model_path)
 
     def _set_float32_policy(self) -> None:
         try:
@@ -160,12 +161,42 @@ class PneumoniaPredictor:
             except Exception as exc:
                 errors.append(f"{fallback_path}: {exc}")
 
+        weights_path = self.models_path / "pneumonia_best_phase2.weights.h5"
+        if weights_path.exists():
+            try:
+                logger.info("Trying pneumonia architecture rebuild from weights at %s", weights_path)
+                model = self._build_efficientnet_model()
+                model.load_weights(weights_path)
+                self.model_path = weights_path
+                return model
+            except Exception as exc:
+                errors.append(f"{weights_path}: {exc}")
+
         joined_errors = " | ".join(errors)
         raise RuntimeError(
-            "Pneumonia model could not be loaded. Please re-save the model using "
-            "TensorFlow 2.16.2/Keras 3.3.3. Details: "
+            "Pneumonia model could not be loaded from .keras, .h5, or weights fallback. "
+            "Please re-save the model using TensorFlow 2.16.2/Keras 3.3.3. Details: "
             f"{joined_errors}"
         )
+
+    def _build_efficientnet_model(self):
+        img_h, img_w = self.img_size
+        dropout_rate = float(self.meta.get("dropout_rate", 0.5))
+
+        base = self.tf.keras.applications.EfficientNetB0(
+            include_top=False,
+            weights=None,
+            input_shape=(img_h, img_w, 3),
+        )
+
+        inputs = self.tf.keras.Input(shape=(img_h, img_w, 3))
+        x = base(inputs, training=False)
+        x = self.tf.keras.layers.GlobalAveragePooling2D()(x)
+        x = self.tf.keras.layers.BatchNormalization()(x)
+        x = self.tf.keras.layers.Dropout(dropout_rate)(x)
+        outputs = self.tf.keras.layers.Dense(1, activation="sigmoid", dtype="float32")(x)
+
+        return self.tf.keras.Model(inputs, outputs, name="efficientnet_pneumonia")
 
     def predict_from_path(self, img_path: str) -> dict:
         """Load an image from disk and return prediction."""

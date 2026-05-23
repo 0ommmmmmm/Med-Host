@@ -4,9 +4,7 @@ import streamlit as st
 
 
 DISCLAIMER = (
-    "This project is for educational and portfolio use only. It is not medical "
-    "advice, diagnosis, or treatment. Always consult a qualified healthcare "
-    "professional for health decisions."
+    "Please consult with a qualified healthcare professional for an diagnosis and personalized medical advice. "
 )
 
 

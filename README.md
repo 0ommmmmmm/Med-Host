@@ -119,9 +119,10 @@ The pneumonia model is loaded lazily, so the app can still run if that model is 
 - `tf.keras.models.load_model(..., compile=False)`
 - `.keras` loading with `safe_mode=False`
 - `.h5` fallback when `models/pneumonia_model.h5` exists
+- architecture rebuild from `models/pneumonia_best_phase2.weights.h5` when the `.keras` file cannot be deserialized
 - RGB conversion, 224x224 resize, `float32` batch shape `(1, 224, 224, 3)`, and EfficientNet preprocessing
 
-If the UI shows `Pneumonia model could not be loaded`, re-save the pneumonia model using Python 3.11 with TensorFlow 2.16.2 and Keras 3.3.3.
+If the UI shows `Pneumonia model could not be loaded`, make sure `models/pneumonia_best_phase2.weights.h5` is present. If it is missing or incompatible, re-save the pneumonia model using Python 3.11 with TensorFlow 2.16.2 and Keras 3.3.3.
 
 ## Streamlit Cloud Deployment
 

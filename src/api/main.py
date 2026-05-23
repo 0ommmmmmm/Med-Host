@@ -36,7 +36,7 @@ models_dir: str | None = None
 
 
 PNEUMONIA_LOAD_MESSAGE = (
-    "Pneumonia model could not be loaded. Please re-save the model using "
+    "Pneumonia model could not be loaded from .keras, .h5, or weights fallback. Please re-save it using "
     "TensorFlow 2.16.2/Keras 3.3.3."
 )
 
