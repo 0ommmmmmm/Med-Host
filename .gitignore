@@ -14,4 +14,6 @@ env/
 .DS_Store
 
 logs/
-*.log
+*.log.venv/
+models/*.keras
+models/*.h5
