@@ -31,29 +31,62 @@ logger = get_logger("api")
 # ---------------------------------------------------------------------------
 
 predictors: dict = {}
+model_errors: dict = {}
+models_dir: str | None = None
+
+
+PNEUMONIA_LOAD_MESSAGE = (
+    "Pneumonia model could not be loaded. Please re-save the model using "
+    "TensorFlow 2.16.2/Keras 3.3.3."
+)
+
+
+def public_model_error(model_name: str, error: Exception) -> str:
+    if model_name == "pneumonia":
+        return PNEUMONIA_LOAD_MESSAGE
+    return str(error)
+
+
+def load_diabetes_predictor(path: str) -> None:
+    try:
+        predictors["diabetes"] = DiabetesPredictor(path)
+        model_errors.pop("diabetes", None)
+        logger.info("Diabetes model ready.")
+    except FileNotFoundError as e:
+        model_errors["diabetes"] = public_model_error("diabetes", e)
+        logger.warning("Diabetes model not loaded: %s", e)
+    except Exception as e:
+        model_errors["diabetes"] = public_model_error("diabetes", e)
+        logger.error("Diabetes model failed to load: %s", e)
+
+
+def load_pneumonia_predictor(path: str) -> None:
+    try:
+        predictors["pneumonia"] = PneumoniaPredictor(path)
+        model_errors.pop("pneumonia", None)
+        logger.info("Pneumonia model ready.")
+    except FileNotFoundError as e:
+        model_errors["pneumonia"] = public_model_error("pneumonia", e)
+        logger.warning("Pneumonia model not loaded: %s", e)
+    except Exception as e:
+        model_errors["pneumonia"] = public_model_error("pneumonia", e)
+        logger.error("Pneumonia model failed to load: %s", model_errors["pneumonia"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models on startup; release on shutdown."""
+    global models_dir
     cfg = load_config()
     models_dir = cfg["paths"]["models_dir"]
 
-    logger.info("Loading models…")
-    try:
-        predictors["diabetes"]  = DiabetesPredictor(models_dir)
-        logger.info("Diabetes model ready.")
-    except FileNotFoundError as e:
-        logger.warning(str(e))
-
-    try:
-        predictors["pneumonia"] = PneumoniaPredictor(models_dir)
-        logger.info("Pneumonia model ready.")
-    except FileNotFoundError as e:
-        logger.warning(str(e))
+    logger.info("Loading available models from %s", models_dir)
+    load_diabetes_predictor(models_dir)
+    load_pneumonia_predictor(models_dir)
 
     yield   # app runs here
 
     predictors.clear()
+    model_errors.clear()
     logger.info("Models unloaded.")
 
 
@@ -114,6 +147,7 @@ def health():
     return {
         "status": "ok",
         "models_loaded": list(predictors.keys()),
+        "model_errors": model_errors,
         "timestamp": time.time(),
     }
 
@@ -135,7 +169,15 @@ def predict_diabetes(req: DiabetesRequest):
 @app.post("/predict/pneumonia", response_model=PredictionResponse, tags=["Prediction"])
 async def predict_pneumonia(file: UploadFile = File(...)):
     if "pneumonia" not in predictors:
-        raise HTTPException(503, "Pneumonia model not loaded. Run training first.")
+        if models_dir:
+            load_pneumonia_predictor(models_dir)
+
+    if "pneumonia" not in predictors:
+        detail = model_errors.get(
+            "pneumonia",
+            PNEUMONIA_LOAD_MESSAGE,
+        )
+        raise HTTPException(503, detail)
 
     allowed = {"image/jpeg", "image/png", "image/jpg"}
     if file.content_type not in allowed:
@@ -145,5 +187,12 @@ async def predict_pneumonia(file: UploadFile = File(...)):
     if len(img_bytes) > 10 * 1024 * 1024:   # 10 MB guard
         raise HTTPException(413, "File too large. Maximum size is 10 MB.")
 
-    result = predictors["pneumonia"].predict_from_bytes(img_bytes)
+    try:
+        result = predictors["pneumonia"].predict_from_bytes(img_bytes)
+    except Exception as e:
+        logger.exception("Pneumonia prediction failed.")
+        raise HTTPException(
+            503,
+            "Pneumonia prediction failed. Please verify the model was saved with TensorFlow 2.16.2/Keras 3.3.3.",
+        ) from e
     return PredictionResponse(**result)

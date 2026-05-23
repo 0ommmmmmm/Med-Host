@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 # Virtual env
+.venv/
 venv/
 env/
 
@@ -14,7 +15,7 @@ env/
 .DS_Store
 
 logs/
-*.log.venv/
+*.log
 models/*.keras
 models/*.h5
 data/

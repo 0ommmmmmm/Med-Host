@@ -63,7 +63,13 @@ medical-assist-pro/
 
 ## Quick Start
 
+Use Python 3.11. TensorFlow 2.16.2 is not compatible with Python 3.13, and using Anaconda Python 3.13 can cause Keras load errors or segmentation faults.
+
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python --version
+
 pip install -r requirements.txt
 
 # 1. Train models if model files are missing
@@ -84,6 +90,7 @@ open http://localhost:8000/docs
 This is the simplest path for Streamlit Cloud and local demos.
 
 ```bash
+source .venv/bin/activate
 streamlit run streamlit_app.py
 ```
 
@@ -92,6 +99,7 @@ streamlit run streamlit_app.py
 Run the API first:
 
 ```bash
+source .venv/bin/activate
 uvicorn src.api.main:app --reload --port 8000
 ```
 
@@ -100,6 +108,20 @@ Then start Streamlit with the backend URL:
 ```bash
 MEDICAL_ASSIST_API_URL=http://localhost:8000 streamlit run streamlit_app.py
 ```
+
+You can copy `.env.example` to `.env` for local environment notes. Streamlit also works without `MEDICAL_ASSIST_API_URL`; in that mode it loads models from the local `models/` folder.
+
+## Pneumonia Model Compatibility
+
+The pneumonia model is loaded lazily, so the app can still run if that model is missing or incompatible. Inference uses:
+
+- TensorFlow mixed precision policy reset to `float32`
+- `tf.keras.models.load_model(..., compile=False)`
+- `.keras` loading with `safe_mode=False`
+- `.h5` fallback when `models/pneumonia_model.h5` exists
+- RGB conversion, 224x224 resize, `float32` batch shape `(1, 224, 224, 3)`, and EfficientNet preprocessing
+
+If the UI shows `Pneumonia model could not be loaded`, re-save the pneumonia model using Python 3.11 with TensorFlow 2.16.2 and Keras 3.3.3.
 
 ## Streamlit Cloud Deployment
 
@@ -132,4 +154,3 @@ Use these settings:
 - Results are model outputs for educational demonstration only.
 - Chest X-ray interpretation requires professional radiology review.
 - Confidence is not the same as medical certainty.
-# Med-Host

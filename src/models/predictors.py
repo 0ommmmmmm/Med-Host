@@ -7,11 +7,10 @@ Loading and inference are clearly separated from training code.
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import joblib
-import tensorflow as tf
+import pandas as pd
 
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -39,11 +38,19 @@ class DiabetesPredictor:
             )
 
         self.pipeline = joblib.load(pipeline_path)
+        self._patch_legacy_sklearn_pipeline()
         logger.info(f"Loaded diabetes pipeline from {pipeline_path}")
 
         with open(meta_path) as f:
             self.meta = json.load(f)
         self.features: list[str] = self.meta["features"]
+
+    def _patch_legacy_sklearn_pipeline(self) -> None:
+        """Add safe defaults for older pickled sklearn estimators."""
+        steps = getattr(self.pipeline, "named_steps", {})
+        for estimator in steps.values():
+            if estimator.__class__.__name__ == "LogisticRegression" and not hasattr(estimator, "multi_class"):
+                estimator.multi_class = "auto"
 
     def predict(self, feature_values: list[float]) -> dict:
         """
@@ -63,7 +70,7 @@ class DiabetesPredictor:
                 f"Expected {len(self.features)} features, got {len(feature_values)}."
             )
 
-        X = np.array([feature_values])
+        X = pd.DataFrame([feature_values], columns=self.features)
         pred  = int(self.pipeline.predict(X)[0])
         proba = float(self.pipeline.predict_proba(X)[0][1])
 
@@ -84,36 +91,95 @@ class PneumoniaPredictor:
     """
 
     def __init__(self, models_dir: str = "models"):
-        model_path = os.path.join(models_dir, "pneumonia_model.keras")
-        meta_path  = os.path.join(models_dir, "pneumonia_meta.json")
+        import tensorflow as tf
 
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Pneumonia model not found at '{model_path}'. "
-                "Run src/training/train_pneumonia.py first."
-            )
+        self.tf = tf
+        self.preprocess_input = tf.keras.applications.efficientnet.preprocess_input
+        self._set_float32_policy()
 
-        self.model = tf.keras.models.load_model(model_path)
-        logger.info(f"Loaded pneumonia model from {model_path}")
+        models_path = Path(models_dir)
+        meta_path = models_path / "pneumonia_meta.json"
+
+        self.model_path = self._find_model_path(models_path)
+        self.model = self._load_model_safely(self.model_path)
+        logger.info("Loaded pneumonia model from %s", self.model_path)
 
         with open(meta_path) as f:
             self.meta = json.load(f)
-        self.img_size: tuple[int, int] = tuple(self.meta["img_size"])
+        self.img_size: tuple[int, int] = tuple(self.meta.get("img_size", [224, 224]))
         self.class_names: list[str]    = self.meta["class_names"]
+
+    def _set_float32_policy(self) -> None:
+        try:
+            self.tf.keras.mixed_precision.set_global_policy("float32")
+            logger.info("Set TensorFlow mixed precision policy to float32 for inference.")
+        except Exception as exc:
+            logger.warning("Could not set TensorFlow mixed precision policy: %s", exc)
+
+    def _find_model_path(self, models_path: Path) -> Path:
+        candidates = [
+            models_path / "pneumonia_model.keras",
+            models_path / "pneumonia_model.h5",
+            models_path / "pneumonia_model.hdf5",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        raise FileNotFoundError(
+            "Pneumonia model not found. Expected one of: "
+            + ", ".join(str(path) for path in candidates)
+        )
+
+    def _load_model_safely(self, model_path: Path):
+        errors: list[str] = []
+        suffix = model_path.suffix.lower()
+
+        if suffix == ".keras":
+            load_attempts = [
+                {"compile": False, "safe_mode": False},
+                {"compile": False},
+            ]
+        else:
+            load_attempts = [{"compile": False}]
+
+        for kwargs in load_attempts:
+            try:
+                return self.tf.keras.models.load_model(model_path, **kwargs)
+            except TypeError as exc:
+                errors.append(f"{kwargs}: {exc}")
+            except Exception as exc:
+                errors.append(f"{kwargs}: {exc}")
+
+        fallback_path = model_path.with_suffix(".h5")
+        if suffix == ".keras" and fallback_path.exists():
+            try:
+                logger.info("Trying pneumonia .h5 fallback at %s", fallback_path)
+                return self.tf.keras.models.load_model(fallback_path, compile=False)
+            except Exception as exc:
+                errors.append(f"{fallback_path}: {exc}")
+
+        joined_errors = " | ".join(errors)
+        raise RuntimeError(
+            "Pneumonia model could not be loaded. Please re-save the model using "
+            "TensorFlow 2.16.2/Keras 3.3.3. Details: "
+            f"{joined_errors}"
+        )
 
     def predict_from_path(self, img_path: str) -> dict:
         """Load an image from disk and return prediction."""
         if not os.path.exists(img_path):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
-        img = tf.keras.utils.load_img(img_path, target_size=self.img_size)
+        img = self.tf.keras.utils.load_img(img_path, target_size=self.img_size, color_mode="rgb")
         return self._predict_img(img)
 
     def predict_from_bytes(self, img_bytes: bytes) -> dict:
         """Load an image from raw bytes (used by the API)."""
         import io
         from PIL import Image
-        img = Image.open(io.BytesIO(img_bytes)).resize(self.img_size)
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize(self.img_size)
         return self._predict_img(img)
 
     def _predict_img(self, img) -> dict:
@@ -121,8 +187,9 @@ class PneumoniaPredictor:
         Internal helper – accepts a PIL Image or Keras image object.
         EfficientNetB0's built-in preprocessing expects uint8 [0,255].
         """
-        arr   = tf.keras.utils.img_to_array(img)           # HxWx3, float32
-        batch = tf.expand_dims(arr, 0)                      # 1xHxWx3
+        arr = self.tf.keras.utils.img_to_array(img).astype(np.float32)
+        batch = np.expand_dims(arr, axis=0)                 # 1x224x224x3
+        batch = self.preprocess_input(batch)
         score = float(self.model.predict(batch, verbose=0)[0][0])
 
         # class_names are ordered by directory name (alphabetical):
