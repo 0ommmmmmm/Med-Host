@@ -122,6 +122,8 @@ class PneumoniaPredictor:
             models_path / "pneumonia_model.keras",
             models_path / "pneumonia_model.h5",
             models_path / "pneumonia_model.hdf5",
+            models_path / "pneumonia_best_phase2.weights.h5",
+            models_path / "pneumonia_best_phase1.weights.h5",
         ]
 
         for candidate in candidates:
@@ -136,6 +138,9 @@ class PneumoniaPredictor:
     def _load_model_safely(self, model_path: Path):
         errors: list[str] = []
         suffix = model_path.suffix.lower()
+
+        if model_path.name.endswith(".weights.h5"):
+            return self._load_weights_fallback(model_path, errors)
 
         if suffix == ".keras":
             load_attempts = [
@@ -163,14 +168,7 @@ class PneumoniaPredictor:
 
         weights_path = self.models_path / "pneumonia_best_phase2.weights.h5"
         if weights_path.exists():
-            try:
-                logger.info("Trying pneumonia architecture rebuild from weights at %s", weights_path)
-                model = self._build_efficientnet_model()
-                model.load_weights(weights_path)
-                self.model_path = weights_path
-                return model
-            except Exception as exc:
-                errors.append(f"{weights_path}: {exc}")
+            return self._load_weights_fallback(weights_path, errors)
 
         joined_errors = " | ".join(errors)
         raise RuntimeError(
@@ -178,6 +176,22 @@ class PneumoniaPredictor:
             "Please re-save the model using TensorFlow 2.16.2/Keras 3.3.3. Details: "
             f"{joined_errors}"
         )
+
+    def _load_weights_fallback(self, weights_path: Path, errors: list[str]):
+        try:
+            logger.info("Trying pneumonia architecture rebuild from weights at %s", weights_path)
+            model = self._build_efficientnet_model()
+            model.load_weights(weights_path)
+            self.model_path = weights_path
+            return model
+        except Exception as exc:
+            errors.append(f"{weights_path}: {exc}")
+            joined_errors = " | ".join(errors)
+            raise RuntimeError(
+                "Pneumonia model weights could not be loaded. Please confirm the weights file "
+                "matches the EfficientNetB0 training architecture. Details: "
+                f"{joined_errors}"
+            ) from exc
 
     def _build_efficientnet_model(self):
         img_h, img_w = self.img_size
